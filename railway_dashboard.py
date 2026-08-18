@@ -1,5 +1,6 @@
 """
-ATHENA-X DASHBOARD - Connected to Dhan Cloud Strategy
+ATHENA-X RAILWAY DASHBOARD
+Connects to Dhan API for real-time data
 """
 
 from flask import Flask, render_template_string, jsonify
@@ -17,25 +18,19 @@ CORS(app)
 # CONFIGURATION
 # ============================================================
 
-# Your Dhan Cloud strategy URL (update with your actual URL)
-DHAN_STRATEGY_URL = os.environ.get('DHAN_STRATEGY_URL', '')
-
-# If your strategy exposes an API endpoint, use it
-# For now, we'll use the strategy variables to get data
-
-# ============================================================
-# DHAN CONNECTION
-# ============================================================
-
-# These should match your strategy variables
+# Your Dhan credentials (same as strategy)
 CLIENT_ID = os.environ.get('DHAN_CLIENT_ID', '2608172958')
 ACCESS_TOKEN = os.environ.get('DHAN_ACCESS_TOKEN', '')
 
-def get_strategy_status():
-    """Fetch real data from Dhan Cloud strategy"""
-    
-    # If your strategy exposes an API, call it here
-    # For now, we'll use direct Dhan API calls
+# Dhan API endpoints
+DHAN_API = "https://api.dhan.co/v2"
+
+# ============================================================
+# DATA FETCHING
+# ============================================================
+
+def get_dhan_data():
+    """Fetch real data from Dhan API"""
     
     headers = {
         "access-token": ACCESS_TOKEN,
@@ -43,49 +38,45 @@ def get_strategy_status():
         "Content-Type": "application/json"
     }
     
+    data = {
+        "capital": 0,
+        "today_pnl": 0,
+        "month_pnl": 0,
+        "year_pnl": 0,
+        "win_rate": 0,
+        "wins": 0,
+        "losses": 0,
+        "total_trades": 0,
+        "status": "WAITING",
+        "positions": [],
+        "trades": [],
+        "balance": 0,
+        "last_update": datetime.now().strftime("%H:%M:%S")
+    }
+    
     try:
-        # Get fund limits (available balance)
+        # Get fund limits (balance)
         funds_response = requests.get(
-            "https://api.dhan.co/v2/fundlimit",
+            f"{DHAN_API}/fundlimit",
             headers=headers,
             timeout=10
         )
+        
+        if funds_response.status_code == 200:
+            funds = funds_response.json()
+            if 'data' in funds:
+                balance = funds['data'].get('availabelBalance', 0)
+                data['balance'] = float(balance)
+                data['capital'] = float(balance)
+                data['status'] = "RUNNING"
         
         # Get positions
         positions_response = requests.get(
-            "https://api.dhan.co/v2/positions",
+            f"{DHAN_API}/positions",
             headers=headers,
             timeout=10
         )
         
-        # Get orders/trades (simplified)
-        orders_response = requests.get(
-            "https://api.dhan.co/v2/orders",
-            headers=headers,
-            timeout=10
-        )
-        
-        data = {
-            "capital": 500000,  # Will be updated from fund limit
-            "today_pnl": 0,
-            "month_pnl": 0,
-            "year_pnl": 0,
-            "win_rate": 0,
-            "wins": 0,
-            "losses": 0,
-            "total_trades": 0,
-            "status": "RUNNING",
-            "positions": [],
-            "trades": []
-        }
-        
-        # Parse fund limits
-        if funds_response.status_code == 200:
-            funds = funds_response.json()
-            if 'availabelBalance' in funds:
-                data['capital'] = float(funds['availabelBalance'])
-        
-        # Parse positions
         if positions_response.status_code == 200:
             positions = positions_response.json()
             if isinstance(positions, list):
@@ -99,66 +90,64 @@ def get_strategy_status():
                             'pnl': float(pos.get('unrealizedProfit', 0) or 0)
                         })
         
-        # Calculate P&L (simplified)
-        # In production, you'd track this from your strategy's state
-        data['today_pnl'] = 2350  # Placeholder
-        data['month_pnl'] = 45200  # Placeholder
-        data['year_pnl'] = 285000  # Placeholder
-        data['win_rate'] = 72.0  # Placeholder
-        data['wins'] = 28
-        data['losses'] = 11
-        data['total_trades'] = 39
+        # Get orders (for trade history)
+        orders_response = requests.get(
+            f"{DHAN_API}/orders",
+            headers=headers,
+            timeout=10
+        )
         
-        return data
+        if orders_response.status_code == 200:
+            orders = orders_response.json()
+            if isinstance(orders, list):
+                for order in orders[:10]:
+                    if order.get('orderStatus') == 'TRADED':
+                        data['trades'].append({
+                            'time': order.get('createTime', '')[:5],
+                            'symbol': order.get('tradingSymbol', 'NIFTY'),
+                            'option': f"{order.get('drvStrikePrice', '')}{order.get('drvOptionType', '')}",
+                            'pnl': float(order.get('averageTradedPrice', 0) - order.get('price', 0)) * order.get('filledQty', 0),
+                            'status': 'WIN' if order.get('averageTradedPrice', 0) > order.get('price', 0) else 'LOSS'
+                        })
+        
+        # Calculate metrics
+        total_trades = len(data['trades'])
+        if total_trades > 0:
+            data['wins'] = sum(1 for t in data['trades'] if t['status'] == 'WIN')
+            data['losses'] = total_trades - data['wins']
+            data['win_rate'] = (data['wins'] / total_trades) * 100
+            data['total_trades'] = total_trades
+            data['today_pnl'] = sum(t['pnl'] for t in data['trades'])
+            data['month_pnl'] = data['today_pnl']
+            data['year_pnl'] = data['today_pnl']
+        
+        data['last_update'] = datetime.now().strftime("%H:%M:%S")
         
     except Exception as e:
-        print(f"Error fetching data: {e}")
-        # Return sample data if API fails
-        return get_sample_data()
-
-def get_sample_data():
-    """Sample data for demo"""
-    return {
-        "capital": 500000,
-        "today_pnl": 2350,
-        "month_pnl": 45200,
-        "year_pnl": 285000,
-        "win_rate": 72.0,
-        "wins": 28,
-        "losses": 11,
-        "total_trades": 39,
-        "status": "RUNNING",
-        "positions": [
-            {"symbol": "NIFTY", "option": "24550 CE", "entry": 185.5, "current": 188.2, "pnl": 540}
-        ],
-        "trades": [
-            {"time": "09:45", "symbol": "NIFTY", "option": "24500 CE", "pnl": 1250, "status": "WIN"},
-            {"time": "10:30", "symbol": "NIFTY", "option": "24600 CE", "pnl": -850, "status": "LOSS"},
-            {"time": "11:15", "symbol": "BANK_NIFTY", "option": "52000 PE", "pnl": 2100, "status": "WIN"},
-            {"time": "12:00", "symbol": "NIFTY", "option": "24550 CE", "pnl": 1800, "status": "WIN"},
-        ]
-    }
+        print(f"⚠️ Error fetching data: {e}")
+    
+    return data
 
 # ============================================================
 # DATA CACHE
 # ============================================================
 
 cached_data = None
-last_update = None
+last_cache_time = None
 
 def get_cached_data():
-    global cached_data, last_update
+    global cached_data, last_cache_time
     
-    # Refresh every 30 seconds
-    if last_update and (datetime.now() - last_update).seconds < 30:
+    # Refresh every 10 seconds
+    if last_cache_time and (datetime.now() - last_cache_time).seconds < 10:
         return cached_data
     
-    cached_data = get_strategy_status()
-    last_update = datetime.now()
+    cached_data = get_dhan_data()
+    last_cache_time = datetime.now()
     return cached_data
 
 # ============================================================
-# HTML TEMPLATE (simplified version)
+# HTML TEMPLATE
 # ============================================================
 
 HTML_TEMPLATE = '''
@@ -177,6 +166,7 @@ HTML_TEMPLATE = '''
             padding: 20px;
         }
         .container { max-width: 1400px; margin: 0 auto; }
+        
         .header {
             background: linear-gradient(135deg, #1a1a2e, #16213e);
             border-radius: 15px;
@@ -200,6 +190,7 @@ HTML_TEMPLATE = '''
         }
         .status.running { background: #00ff88; color: #0a0a1a; }
         .status.waiting { background: #ffd700; color: #0a0a1a; }
+        .status.stopped { background: #ff4444; color: #fff; }
         
         .cards {
             display: grid;
@@ -319,18 +310,16 @@ HTML_TEMPLATE = '''
         
         <div class="cards" id="cards">
             <div class="card">
-                <div class="label">💰 Capital</div>
-                <div class="value blue" id="capital">₹---</div>
+                <div class="label">💰 Balance</div>
+                <div class="value blue" id="balance">₹---</div>
             </div>
             <div class="card">
                 <div class="label">📈 Today P&L</div>
                 <div class="value green" id="today-pnl">₹---</div>
-                <div class="sub" id="today-target">Target: ₹5,000</div>
             </div>
             <div class="card">
                 <div class="label">📊 Month P&L</div>
                 <div class="value gold" id="month-pnl">₹---</div>
-                <div class="sub" id="month-target">Target: ₹62,500</div>
             </div>
             <div class="card">
                 <div class="label">📈 Year P&L</div>
@@ -356,7 +345,7 @@ HTML_TEMPLATE = '''
                 <div style="display:flex; justify-content:space-between; font-size:12px; color:#666; margin-top:5px;">
                     <span>₹0</span>
                     <span id="current-month-pnl">₹0</span>
-                    <span>₹62,500</span>
+                    <span id="month-target">₹62,500</span>
                 </div>
             </div>
             <div class="chart-box">
@@ -367,7 +356,7 @@ HTML_TEMPLATE = '''
                 <div style="display:flex; justify-content:space-between; font-size:12px; color:#666; margin-top:5px;">
                     <span>₹0</span>
                     <span id="current-daily-pnl">₹0</span>
-                    <span>₹5,000</span>
+                    <span id="daily-target">₹5,000</span>
                 </div>
             </div>
         </div>
@@ -402,7 +391,8 @@ HTML_TEMPLATE = '''
         
         function updateDashboard(data) {
             document.getElementById('timestamp').textContent = 'Last updated: ' + data.last_update;
-            document.getElementById('capital').textContent = '₹' + formatNumber(data.capital);
+            
+            document.getElementById('balance').textContent = '₹' + formatNumber(data.balance);
             
             const todayPnl = document.getElementById('today-pnl');
             todayPnl.textContent = '₹' + formatNumber(data.today_pnl);
@@ -509,19 +499,22 @@ def index():
 @app.route('/api/data')
 def get_data():
     data = get_cached_data()
-    data['last_update'] = datetime.now().strftime("%H:%M:%S")
     return jsonify(data)
 
 @app.route('/api/refresh')
 def refresh():
-    global cached_data, last_update
+    global cached_data, last_cache_time
     cached_data = None
-    last_update = None
+    last_cache_time = None
     return jsonify({"status": "refreshed"})
 
 @app.route('/api/health')
 def health():
-    return jsonify({"status": "healthy", "timestamp": datetime.now().isoformat()})
+    return jsonify({
+        "status": "healthy", 
+        "timestamp": datetime.now().isoformat(),
+        "version": "2.0.0"
+    })
 
 # ============================================================
 # MAIN
